@@ -150,11 +150,20 @@ public partial class App : Application
                     return;
                 }
 
-                var dialog = new UpdateWindow(update)
+                var mainWindow = Current.MainWindow;
+                mainWindow!.Visibility = Visibility.Hidden;
+                try
                 {
-                    Owner = Current.MainWindow
-                };
-                dialog.ShowDialog();
+                    var dialog = new UpdateWindow(update)
+                    {
+                        WindowStartupLocation = WindowStartupLocation.CenterScreen
+                    };
+                    dialog.ShowDialog();
+                }
+                finally
+                {
+                    mainWindow.Visibility = Visibility.Visible;
+                }
             });
         });
     }

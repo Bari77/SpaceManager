@@ -1,6 +1,5 @@
 using System.IO;
 using System.Windows;
-using System.Windows.Media.Imaging;
 using SpaceManager.Services;
 
 namespace SpaceManager;
@@ -21,8 +20,6 @@ public partial class UpdateWindow : Window
     {
         try
         {
-            SetApplicationIcon();
-
             if (string.IsNullOrWhiteSpace(_update.DownloadUrl))
                 throw new InvalidOperationException("URL de téléchargement indisponible.");
 
@@ -76,18 +73,6 @@ public partial class UpdateWindow : Window
                 MessageBoxImage.Error);
             DialogResult = false;
             Close();
-        }
-    }
-
-    private void SetApplicationIcon()
-    {
-        try
-        {
-            Icon = BitmapFrame.Create(new Uri("pack://application:,,,/Assets/app.ico", UriKind.Absolute));
-        }
-        catch
-        {
-            // L'icône embarquée dans l'exécutable reste utilisée par Windows.
         }
     }
 

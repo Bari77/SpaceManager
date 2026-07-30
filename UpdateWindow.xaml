@@ -2,44 +2,38 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Mise à jour SpaceManager"
-        Height="220"
-        Width="460"
-        WindowStartupLocation="CenterOwner"
+        Height="200"
+        Width="440"
+        WindowStartupLocation="CenterScreen"
         ResizeMode="NoResize"
-        ShowInTaskbar="False"
-        Background="{StaticResource WindowBackgroundBrush}"
+        ShowInTaskbar="True"
+        WindowStyle="SingleBorderWindow"
+        Background="{StaticResource PanelBackgroundBrush}"
         Loaded="Window_Loaded">
-    <Border Margin="20"
-            Padding="20"
-            Background="{StaticResource PanelBackgroundBrush}"
-            BorderBrush="{StaticResource BorderBrushColor}"
-            BorderThickness="1"
-            CornerRadius="6">
-        <StackPanel>
-            <TextBlock Text="Mise à jour de SpaceManager"
-                       FontSize="16"
-                       FontWeight="SemiBold"
-                       Foreground="{StaticResource PrimaryTextBrush}"/>
-            <TextBlock x:Name="VersionText"
-                       Margin="0,6,0,16"
-                       Foreground="{StaticResource SecondaryTextBrush}"/>
+    <StackPanel Margin="24">
+        <TextBlock Text="Mise à jour de SpaceManager"
+                   FontSize="16"
+                   FontWeight="SemiBold"
+                   Foreground="{StaticResource PrimaryTextBrush}"/>
+        <TextBlock x:Name="VersionText"
+                   Margin="0,6,0,16"
+                   Foreground="{StaticResource SecondaryTextBrush}"/>
 
-            <TextBlock x:Name="StatusText"
-                       Text="Préparation…"
-                       Foreground="{StaticResource PrimaryTextBrush}"
-                       Margin="0,0,0,8"/>
+        <TextBlock x:Name="StatusText"
+                   Text="Préparation…"
+                   Foreground="{StaticResource PrimaryTextBrush}"
+                   Margin="0,0,0,8"/>
 
-            <ProgressBar x:Name="ProgressBar"
-                         Height="16"
-                         Minimum="0"
-                         Maximum="100"
-                         Style="{StaticResource SizeProgressBar}"/>
+        <ProgressBar x:Name="ProgressBar"
+                     Height="16"
+                     Minimum="0"
+                     Maximum="100"
+                     Style="{StaticResource SizeProgressBar}"/>
 
-            <TextBlock x:Name="ProgressPercentText"
-                       Margin="0,8,0,0"
-                       HorizontalAlignment="Right"
-                       FontFamily="Consolas"
-                       Foreground="{StaticResource AccentBrush}"/>
-        </StackPanel>
-    </Border>
+        <TextBlock x:Name="ProgressPercentText"
+                   Margin="0,8,0,0"
+                   HorizontalAlignment="Right"
+                   FontFamily="Consolas"
+                   Foreground="{StaticResource AccentBrush}"/>
+    </StackPanel>
 </Window>
