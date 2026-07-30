@@ -1,4 +1,5 @@
-﻿using System.IO;
+﻿using System.Diagnostics;
+using System.IO;
 using System.Windows;
 using SpaceManager.Services;
 
@@ -7,9 +8,12 @@ namespace SpaceManager;
 public partial class App : Application
 {
     private SingleInstanceService? _singleInstance;
+    private string? _justUpdatedVersion;
 
     protected override void OnStartup(StartupEventArgs e)
     {
+        _justUpdatedVersion = TryReadUpdatedVersionArg(e.Args);
+
         DispatcherUnhandledException += (_, args) =>
         {
             MessageBox.Show(
@@ -65,8 +69,98 @@ public partial class App : Application
             _singleInstance.StartListening(path => ((MainWindow)MainWindow!).OpenPath(path));
 
         mainWindow.Show();
+
+        if (_justUpdatedVersion != null)
+            ShowUpdateSuccessMessage(_justUpdatedVersion);
+
+        if (_singleInstance.IsFirstInstance && _justUpdatedVersion == null)
+            TryPromptForUpdateAsync();
+
         base.OnStartup(e);
     }
+
+    private static void ShowUpdateSuccessMessage(string version)
+    {
+        MessageBox.Show(
+            $"SpaceManager a été mis à jour vers la version {version}.\n\nL'application est prête.",
+            "Mise à jour réussie",
+            MessageBoxButton.OK,
+            MessageBoxImage.Information);
+    }
+
+    private static string? TryReadUpdatedVersionArg(string[] args)
+    {
+        for (var i = 0; i < args.Length - 1; i++)
+        {
+            if (string.Equals(args[i], "--updated", StringComparison.OrdinalIgnoreCase)
+                && !string.IsNullOrWhiteSpace(args[i + 1]))
+                return args[i + 1].Trim();
+        }
+
+        return null;
+    }
+
+    private static void TryPromptForUpdateAsync()
+    {
+        _ = Task.Run(async () =>
+        {
+            var update = await UpdateChecker.CheckForUpdateAsync().ConfigureAwait(false);
+            if (update == null)
+                return;
+
+            await Current.Dispatcher.InvokeAsync(() =>
+            {
+                if (Current.MainWindow == null)
+                    return;
+
+                var current = UpdateChecker.CurrentVersion.ToString(3);
+                var latest = update.Version.ToString(3);
+                var message =
+                    $"Une nouvelle version est disponible.\n\n" +
+                    $"Version installée : {current}\n" +
+                    $"Dernière version : {latest}\n\n" +
+                    "Voulez-vous télécharger et installer la mise à jour maintenant ?";
+
+                var result = MessageBox.Show(
+                    message,
+                    "Mise à jour SpaceManager",
+                    MessageBoxButton.YesNo,
+                    MessageBoxImage.Information,
+                    MessageBoxResult.No,
+                    MessageBoxOptions.DefaultDesktopOnly);
+
+                if (result != MessageBoxResult.Yes)
+                    return;
+
+                if (string.IsNullOrWhiteSpace(update.DownloadUrl))
+                {
+                    OpenBrowser(update.ReleaseUrl);
+                    return;
+                }
+
+                if (!UpdateInstaller.CanUpdateInPlace())
+                {
+                    MessageBox.Show(
+                        "La mise à jour automatique n'est disponible que pour l'exécutable publié SpaceManager.exe.\n\n" +
+                        "Le navigateur va s'ouvrir pour télécharger la nouvelle version.",
+                        "SpaceManager",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Information);
+                    OpenBrowser(update.DownloadUrl ?? update.ReleaseUrl);
+                    return;
+                }
+
+                var dialog = new UpdateWindow(update)
+                {
+                    Owner = Current.MainWindow
+                };
+                dialog.ShowDialog();
+            });
+        });
+    }
+
+    private static void OpenBrowser(string url) =>
+        Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
 
     protected override void OnExit(ExitEventArgs e)
     {
@@ -76,11 +170,17 @@ public partial class App : Application
 
     private static string ResolveStartupPath(string[] args)
     {
-        if (args.Length > 0)
+        for (var i = 0; i < args.Length; i++)
         {
-            var candidate = args[0].Trim().Trim('"');
-            if (string.IsNullOrWhiteSpace(candidate))
-                return GetDefaultPath();
+            if (string.Equals(args[i], "--updated", StringComparison.OrdinalIgnoreCase))
+            {
+                i++;
+                continue;
+            }
+
+            var candidate = args[i].Trim().Trim('"');
+            if (string.IsNullOrWhiteSpace(candidate) || candidate.StartsWith("--", StringComparison.Ordinal))
+                continue;
 
             try
             {
@@ -95,7 +195,7 @@ public partial class App : Application
             }
             catch
             {
-                // Chemin invalide, on retombe sur le dossier utilisateur.
+                // Chemin invalide, on passe au prochain argument.
             }
         }
 

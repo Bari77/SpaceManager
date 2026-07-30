@@ -14,6 +14,8 @@ public sealed class FolderNode : INotifyPropertyChanged
     private bool _hasDummyChild = true;
     private bool _isExpanded;
     private bool _childrenLoaded;
+    private bool _isLoadingChildren;
+    private bool _hasPendingAnalysis;
 
     public FolderNode(string fullPath, string name, bool isDirectory, FolderNode? parent = null)
     {
@@ -45,8 +47,32 @@ public sealed class FolderNode : INotifyPropertyChanged
     public bool ChildrenLoaded
     {
         get => _childrenLoaded;
-        set => SetField(ref _childrenLoaded, value);
+        set
+        {
+            if (SetField(ref _childrenLoaded, value))
+                RefreshAnalysisState();
+        }
     }
+
+    public bool IsLoadingChildren
+    {
+        get => _isLoadingChildren;
+        set
+        {
+            if (SetField(ref _isLoadingChildren, value))
+                RefreshAnalysisState();
+        }
+    }
+
+    public bool HasPendingAnalysis => _hasPendingAnalysis;
+
+    internal void SetHasPendingAnalysis(bool value)
+    {
+        if (SetField(ref _hasPendingAnalysis, value))
+            NotifySizeStateChanged();
+    }
+
+    private void RefreshAnalysisState() => FolderNodeAnalysis.RefreshPendingAnalysis(this);
 
     public bool IsExpanded
     {
@@ -64,7 +90,10 @@ public sealed class FolderNode : INotifyPropertyChanged
         set
         {
             if (SetField(ref _isCalculating, value))
+            {
                 NotifySizeStateChanged();
+                RefreshAnalysisState();
+            }
         }
     }
 
@@ -74,7 +103,10 @@ public sealed class FolderNode : INotifyPropertyChanged
         set
         {
             if (SetField(ref _isQueued, value))
+            {
                 NotifySizeStateChanged();
+                RefreshAnalysisState();
+            }
         }
     }
 
@@ -84,7 +116,7 @@ public sealed class FolderNode : INotifyPropertyChanged
         {
             if (IsQueued)
                 return SizeLoadState.Queued;
-            if (IsCalculating || Size < 0)
+            if (IsCalculating || Size < 0 || IsLoadingChildren)
                 return SizeLoadState.Calculating;
             return SizeLoadState.Ready;
         }
@@ -92,16 +124,19 @@ public sealed class FolderNode : INotifyPropertyChanged
 
     public bool IsSizeReady => LoadState == SizeLoadState.Ready;
 
+    public bool ShowsAnalysisProgress => LoadState == SizeLoadState.Calculating;
+
     public long Size
     {
         get => _size;
         set
         {
-            if (SetField(ref _size, value))
-            {
-                NotifySizeStateChanged();
-                SizeChanged?.Invoke(this, EventArgs.Empty);
-            }
+        if (SetField(ref _size, value))
+        {
+            NotifySizeStateChanged();
+            SizeChanged?.Invoke(this, EventArgs.Empty);
+            RefreshAnalysisState();
+        }
         }
     }
 
@@ -137,6 +172,7 @@ public sealed class FolderNode : INotifyPropertyChanged
         OnPropertyChanged(nameof(BarWidth));
         OnPropertyChanged(nameof(LoadState));
         OnPropertyChanged(nameof(IsSizeReady));
+        OnPropertyChanged(nameof(ShowsAnalysisProgress));
     }
 
     private void OnPropertyChanged([CallerMemberName] string? propertyName = null) =>

@@ -42,15 +42,26 @@ public static class FolderNodeSorter
     public static void UpdateSizeRatios(FolderNode parent)
     {
         var siblings = parent.Children.Where(c => !c.IsDummy).ToList();
-        var knownSizes = siblings.Where(c => c.Size >= 0).Select(c => c.Size).ToList();
-        var maxSize = knownSizes.Count > 0 ? knownSizes.Max() : 0L;
+        if (siblings.Count == 0)
+            return;
+
+        var referenceSize = parent.Size;
+        if (referenceSize < 0)
+            referenceSize = siblings.Where(c => c.Size >= 0).Sum(c => c.Size);
+
+        if (referenceSize <= 0)
+        {
+            foreach (var child in siblings)
+                child.SizeRatio = 0;
+            return;
+        }
 
         foreach (var child in siblings)
         {
-            if (child.Size < 0 || maxSize == 0)
+            if (child.Size < 0)
                 child.SizeRatio = 0;
             else
-                child.SizeRatio = (double)child.Size / maxSize;
+                child.SizeRatio = Math.Min(1.0, (double)child.Size / referenceSize);
         }
     }
 }

@@ -1,4 +1,6 @@
+using System.Collections.Concurrent;
 using System.IO;
+using System.Runtime.CompilerServices;
 using SpaceManager.Models;
 
 namespace SpaceManager.Services;
@@ -6,53 +8,100 @@ namespace SpaceManager.Services;
 public sealed class FolderSizeService
 {
     private const int MaxConcurrentScans = 2;
+    private const int ChildrenBatchSize = 64;
 
-    private readonly Action<Action>? _uiInvoke;
+    private readonly Func<Action, Task>? _uiInvokeAsync;
     private readonly SizeCache _sizeCache;
     private readonly SemaphoreSlim _scanSemaphore = new(MaxConcurrentScans, MaxConcurrentScans);
     private readonly Dictionary<string, CancellationTokenSource> _sizeCalculations = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentQueue<(FolderNode Node, CancellationTokenSource Cts)> _pendingSizeCalculations = new();
     private readonly object _lock = new();
+    private int _loadGeneration;
+    private int _sizeProcessorCount;
 
-    public FolderSizeService(Action<Action>? uiInvoke = null, SizeCache? sizeCache = null)
+    public FolderSizeService(Func<Action, Task>? uiInvokeAsync = null, SizeCache? sizeCache = null)
     {
-        _uiInvoke = uiInvoke;
+        _uiInvokeAsync = uiInvokeAsync;
         _sizeCache = sizeCache ?? new SizeCache();
     }
 
-    public async Task LoadChildrenAsync(FolderNode node, CancellationToken cancellationToken = default)
+    public async Task LoadChildrenAsync(
+        FolderNode node,
+        CancellationToken cancellationToken = default,
+        Action<FolderNode>? onBatchAdded = null)
     {
-        if (!node.IsDirectory || node.ChildrenLoaded || node.IsDummy)
+        if (!node.IsDirectory || node.IsDummy || node.ChildrenLoaded || node.IsLoadingChildren)
             return;
 
-        node.ChildrenLoaded = true;
-        node.Children.Clear();
+        int generation;
+        lock (_lock)
+            generation = ++_loadGeneration;
 
-        IReadOnlyList<(string Path, string Name, bool IsDirectory)> entries;
+        await RunOnUiAsync(() =>
+        {
+            node.IsLoadingChildren = true;
+            node.Children.Clear();
+            onBatchAdded?.Invoke(node);
+        }).ConfigureAwait(false);
+
+        var batch = new List<(string Path, string Name, bool IsDirectory)>(ChildrenBatchSize);
 
         try
         {
-            entries = await Task.Run(() => EnumerateImmediateChildren(node.FullPath), cancellationToken)
-                .ConfigureAwait(true);
+            await Task.Run(async () =>
+            {
+                await foreach (var entry in EnumerateImmediateChildrenStreaming(node.FullPath, cancellationToken)
+                                   .ConfigureAwait(false))
+                {
+                    if (IsLoadStale(generation) || CancellationTokenSourceSafe.IsCancellationRequested(cancellationToken))
+                        throw new OperationCanceledException();
+
+                    batch.Add(entry);
+                    if (batch.Count < ChildrenBatchSize)
+                        continue;
+
+                    var copy = batch.ToList();
+                    batch.Clear();
+                    await AddChildrenBatchAsync(node, copy, cancellationToken, generation, onBatchAdded)
+                        .ConfigureAwait(false);
+                }
+
+                if (batch.Count > 0)
+                    await AddChildrenBatchAsync(node, batch, cancellationToken, generation, onBatchAdded)
+                        .ConfigureAwait(false);
+            }, cancellationToken).ConfigureAwait(false);
+
+            if (IsLoadStale(generation) || CancellationTokenSourceSafe.IsCancellationRequested(cancellationToken))
+                throw new OperationCanceledException();
+
+            await RunOnUiAsync(() =>
+            {
+                node.HasDummyChild = false;
+                node.ChildrenLoaded = true;
+                node.IsLoadingChildren = false;
+                onBatchAdded?.Invoke(node);
+            }).ConfigureAwait(false);
+
+            StartSizeCalculationsForNode(node, cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            await RunOnUiAsync(() => node.IsLoadingChildren = false).ConfigureAwait(false);
+            throw;
+        }
+        catch (ObjectDisposedException)
+        {
+            await RunOnUiAsync(() => node.IsLoadingChildren = false).ConfigureAwait(false);
+            throw new OperationCanceledException();
         }
         catch
         {
-            node.ChildrenLoaded = false;
-            return;
+            await RunOnUiAsync(() =>
+            {
+                node.IsLoadingChildren = false;
+                node.ChildrenLoaded = false;
+            }).ConfigureAwait(false);
         }
-
-        foreach (var entry in entries)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            var child = new FolderNode(entry.Path, entry.Name, entry.IsDirectory, node);
-            node.Children.Add(child);
-
-            if (entry.IsDirectory)
-                EnqueueSizeCalculation(child, cancellationToken);
-            else
-                ApplyFileSize(child);
-        }
-
-        node.HasDummyChild = false;
     }
 
     public Task CalculateSizeAsync(FolderNode node, CancellationToken cancellationToken = default)
@@ -60,22 +109,75 @@ public sealed class FolderSizeService
         if (!node.IsDirectory || node.IsDummy)
             return Task.CompletedTask;
 
-        EnqueueSizeCalculation(node, cancellationToken);
+        QueueSizeCalculation(node, cancellationToken);
         return Task.CompletedTask;
     }
 
     public void CancelAll()
     {
+        List<CancellationTokenSource> toDisposePending;
+
         lock (_lock)
         {
+            _loadGeneration++;
+
+            toDisposePending = new List<CancellationTokenSource>();
+            while (_pendingSizeCalculations.TryDequeue(out var pending))
+            {
+                CancellationTokenSourceSafe.Cancel(pending.Cts);
+                toDisposePending.Add(pending.Cts);
+            }
+
             foreach (var cts in _sizeCalculations.Values)
-                cts.Cancel();
+                CancellationTokenSourceSafe.Cancel(cts);
 
             _sizeCalculations.Clear();
         }
+
+        foreach (var cts in toDisposePending)
+            CancellationTokenSourceSafe.Dispose(cts);
     }
 
-    private void EnqueueSizeCalculation(FolderNode node, CancellationToken cancellationToken)
+    private async Task AddChildrenBatchAsync(
+        FolderNode node,
+        IReadOnlyList<(string Path, string Name, bool IsDirectory)> batch,
+        CancellationToken cancellationToken,
+        int generation,
+        Action<FolderNode>? onBatchAdded)
+    {
+        if (CancellationTokenSourceSafe.IsCancellationRequested(cancellationToken) || IsLoadStale(generation))
+            return;
+
+        await RunOnUiAsync(() =>
+        {
+            if (CancellationTokenSourceSafe.IsCancellationRequested(cancellationToken) || IsLoadStale(generation))
+                return;
+
+            foreach (var entry in batch)
+            {
+                if (CancellationTokenSourceSafe.IsCancellationRequested(cancellationToken) || IsLoadStale(generation))
+                    return;
+
+                var child = new FolderNode(entry.Path, entry.Name, entry.IsDirectory, node);
+                node.Children.Add(child);
+
+                if (entry.IsDirectory)
+                    child.IsQueued = true;
+                else
+                    ApplyFileSize(child);
+            }
+
+            onBatchAdded?.Invoke(node);
+        }).ConfigureAwait(false);
+    }
+
+    private void StartSizeCalculationsForNode(FolderNode node, CancellationToken cancellationToken)
+    {
+        foreach (var child in node.Children.Where(c => !c.IsDummy && c.IsDirectory).Take(TreeRowBuilder.MaxVisibleChildren))
+            QueueSizeCalculation(child, cancellationToken);
+    }
+
+    private void QueueSizeCalculation(FolderNode node, CancellationToken cancellationToken)
     {
         if (TryApplyCachedSize(node))
             return;
@@ -85,74 +187,118 @@ public sealed class FolderSizeService
         lock (_lock)
         {
             if (_sizeCalculations.TryGetValue(node.FullPath, out var existing))
-                existing.Cancel();
+                CancellationTokenSourceSafe.Cancel(existing);
 
-            linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            try
+            {
+                linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            }
+            catch (ObjectDisposedException)
+            {
+                return;
+            }
+
             _sizeCalculations[node.FullPath] = linkedCts;
         }
 
-        RunOnUi(() =>
-        {
-            node.IsQueued = true;
-            node.IsCalculating = false;
-        });
+        _pendingSizeCalculations.Enqueue((node, linkedCts));
+        EnsureSizeProcessorRunning();
+    }
 
-        _ = Task.Run(async () =>
+    private void EnsureSizeProcessorRunning()
+    {
+        if (Interlocked.CompareExchange(ref _sizeProcessorCount, 1, 0) != 0)
+            return;
+
+        _ = Task.Run(ProcessSizeCalculationQueueAsync);
+    }
+
+    private async Task ProcessSizeCalculationQueueAsync()
+    {
+        try
+        {
+            while (_pendingSizeCalculations.TryDequeue(out var work))
+            {
+                await ProcessOneSizeCalculationAsync(work.Node, work.Cts).ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _sizeProcessorCount, 0);
+            if (!_pendingSizeCalculations.IsEmpty)
+                EnsureSizeProcessorRunning();
+        }
+    }
+
+    private async Task ProcessOneSizeCalculationAsync(FolderNode node, CancellationTokenSource linkedCts)
+    {
+        var cancellationToken = linkedCts.Token;
+
+        try
         {
             try
             {
-                await _scanSemaphore.WaitAsync(linkedCts.Token).ConfigureAwait(false);
+                await _scanSemaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException)
             {
-                RunOnUi(() =>
+                await RunOnUiAsync(() =>
                 {
                     node.IsQueued = false;
                     node.IsCalculating = false;
-                });
-                CleanupCalculation(node.FullPath, linkedCts);
+                }).ConfigureAwait(false);
+                return;
+            }
+            catch (ObjectDisposedException)
+            {
                 return;
             }
 
             if (TryApplyCachedSize(node))
             {
                 _scanSemaphore.Release();
-                CleanupCalculation(node.FullPath, linkedCts);
                 return;
             }
 
-            RunOnUi(() =>
+            await RunOnUiAsync(() =>
             {
                 node.IsQueued = false;
                 node.IsCalculating = true;
-            });
+            }).ConfigureAwait(false);
 
             try
             {
-                var size = await ComputeDirectorySizeAsync(node.FullPath, linkedCts.Token).ConfigureAwait(false);
+                var size = await ComputeDirectorySizeAsync(node.FullPath, cancellationToken).ConfigureAwait(false);
                 _sizeCache.Set(node.FullPath, size);
                 var capturedSize = size;
-                RunOnUi(() => node.Size = capturedSize);
+                await RunOnUiAsync(() => node.Size = capturedSize).ConfigureAwait(false);
             }
             catch (OperationCanceledException)
             {
                 // Ignoré lors d'un recalcul ou de la fermeture.
             }
+            catch (ObjectDisposedException)
+            {
+                // Source d'annulation déjà libérée.
+            }
             catch
             {
-                RunOnUi(() => node.Size = 0);
+                await RunOnUiAsync(() => node.Size = 0).ConfigureAwait(false);
             }
             finally
             {
                 _scanSemaphore.Release();
-                RunOnUi(() =>
+                await RunOnUiAsync(() =>
                 {
                     node.IsCalculating = false;
                     node.IsQueued = false;
-                });
-                CleanupCalculation(node.FullPath, linkedCts);
+                }).ConfigureAwait(false);
             }
-        }, CancellationToken.None);
+        }
+        finally
+        {
+            CleanupCalculation(node.FullPath, linkedCts);
+        }
     }
 
     private bool TryApplyCachedSize(FolderNode node)
@@ -160,7 +306,7 @@ public sealed class FolderSizeService
         if (!_sizeCache.TryGet(node.FullPath, out var size))
             return false;
 
-        RunOnUi(() =>
+        RunOnUiSync(() =>
         {
             node.IsQueued = false;
             node.IsCalculating = false;
@@ -196,21 +342,42 @@ public sealed class FolderSizeService
                 _sizeCalculations.Remove(fullPath);
         }
 
-        linkedCts.Dispose();
+        CancellationTokenSourceSafe.Dispose(linkedCts);
     }
 
-    private void RunOnUi(Action action)
+    private bool IsLoadStale(int generation)
     {
-        if (_uiInvoke != null)
-            _uiInvoke(action);
+        lock (_lock)
+            return generation != _loadGeneration;
+    }
+
+    private Task RunOnUiAsync(Action action)
+    {
+        if (_uiInvokeAsync != null)
+            return _uiInvokeAsync(action);
+
+        action();
+        return Task.CompletedTask;
+    }
+
+    private void RunOnUiSync(Action action)
+    {
+        if (_uiInvokeAsync != null)
+            _uiInvokeAsync(action).GetAwaiter().GetResult();
         else
             action();
     }
 
-    private static List<(string Path, string Name, bool IsDirectory)> EnumerateImmediateChildren(string path)
+    private static void ThrowIfCancellationRequestedSafe(CancellationToken cancellationToken)
     {
-        var result = new List<(string, string, bool)>();
+        if (CancellationTokenSourceSafe.IsCancellationRequested(cancellationToken))
+            throw new OperationCanceledException();
+    }
 
+    private static async IAsyncEnumerable<(string Path, string Name, bool IsDirectory)> EnumerateImmediateChildrenStreaming(
+        string path,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
         IEnumerable<string> directories;
         IEnumerable<string> files;
 
@@ -232,21 +399,35 @@ public sealed class FolderSizeService
             files = [];
         }
 
+        var yielded = 0;
+
         foreach (var directory in directories)
         {
+            ThrowIfCancellationRequestedSafe(cancellationToken);
+
             var name = Path.GetFileName(directory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
-            if (!string.IsNullOrEmpty(name))
-                result.Add((directory, name, true));
+            if (string.IsNullOrEmpty(name))
+                continue;
+
+            yield return (directory, name, true);
+
+            if (++yielded % 256 == 0)
+                await Task.Yield();
         }
 
         foreach (var file in files)
         {
-            var name = Path.GetFileName(file);
-            if (!string.IsNullOrEmpty(name))
-                result.Add((file, name, false));
-        }
+            ThrowIfCancellationRequestedSafe(cancellationToken);
 
-        return result;
+            var name = Path.GetFileName(file);
+            if (string.IsNullOrEmpty(name))
+                continue;
+
+            yield return (file, name, false);
+
+            if (++yielded % 256 == 0)
+                await Task.Yield();
+        }
     }
 
     private static async Task<long> ComputeDirectorySizeAsync(string path, CancellationToken cancellationToken)
@@ -257,7 +438,7 @@ public sealed class FolderSizeService
 
         while (pendingDirs.Count > 0)
         {
-            cancellationToken.ThrowIfCancellationRequested();
+            ThrowIfCancellationRequestedSafe(cancellationToken);
             var current = pendingDirs.Pop();
 
             IEnumerable<string> subDirs;
@@ -285,7 +466,7 @@ public sealed class FolderSizeService
 
             foreach (var file in files)
             {
-                cancellationToken.ThrowIfCancellationRequested();
+                ThrowIfCancellationRequestedSafe(cancellationToken);
 
                 try
                 {

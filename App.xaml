@@ -183,7 +183,7 @@
             <Setter Property="Background" Value="Transparent"/>
             <Setter Property="BorderThickness" Value="0"/>
             <Setter Property="Foreground" Value="{StaticResource PrimaryTextBrush}"/>
-            <Setter Property="ScrollViewer.HorizontalScrollBarVisibility" Value="Disabled"/>
+            <Setter Property="ScrollViewer.HorizontalScrollBarVisibility" Value="Auto"/>
             <Setter Property="ScrollViewer.CanContentScroll" Value="True"/>
             <Setter Property="VirtualizingPanel.IsVirtualizing" Value="True"/>
             <Setter Property="VirtualizingPanel.ScrollUnit" Value="Pixel"/>
@@ -230,6 +230,60 @@
             </Setter>
         </Style>
 
+        <SolidColorBrush x:Key="ColumnGripBrush" Color="#484850"/>
+        <SolidColorBrush x:Key="ColumnGripHoverBrush" Color="#6E6E78"/>
+
+        <Style x:Key="ColumnHeaderGripperThumb" TargetType="Thumb">
+            <Setter Property="Focusable" Value="False"/>
+            <Setter Property="OverridesDefaultStyle" Value="True"/>
+            <Setter Property="Width" Value="10"/>
+            <Setter Property="Cursor" Value="SizeWE"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Thumb">
+                        <Border x:Name="GripperChrome"
+                                Background="Transparent"
+                                Padding="0,7">
+                            <StackPanel Orientation="Horizontal"
+                                        HorizontalAlignment="Center"
+                                        VerticalAlignment="Stretch">
+                                <Rectangle x:Name="GripLineA"
+                                           Width="1"
+                                           RadiusX="0.5"
+                                           RadiusY="0.5"
+                                           Fill="{StaticResource ColumnGripBrush}"/>
+                                <Rectangle x:Name="GripLineB"
+                                           Width="1"
+                                           Margin="2,0,0,0"
+                                           RadiusX="0.5"
+                                           RadiusY="0.5"
+                                           Fill="{StaticResource ColumnGripBrush}"/>
+                            </StackPanel>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="GripperChrome" Property="Background" Value="{StaticResource MenuHoverBrush}"/>
+                            </Trigger>
+                            <Trigger Property="IsDragging" Value="True">
+                                <Setter TargetName="GripperChrome" Property="Background" Value="{StaticResource ButtonBackgroundBrush}"/>
+                            </Trigger>
+                            <MultiTrigger>
+                                <MultiTrigger.Conditions>
+                                    <Condition Property="IsMouseOver" Value="True"/>
+                                </MultiTrigger.Conditions>
+                                <Setter TargetName="GripLineA" Property="Fill" Value="{StaticResource ColumnGripHoverBrush}"/>
+                                <Setter TargetName="GripLineB" Property="Fill" Value="{StaticResource ColumnGripHoverBrush}"/>
+                            </MultiTrigger>
+                            <Trigger Property="IsDragging" Value="True">
+                                <Setter TargetName="GripLineA" Property="Fill" Value="{StaticResource AccentBrush}"/>
+                                <Setter TargetName="GripLineB" Property="Fill" Value="{StaticResource AccentBrush}"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
         <Style TargetType="GridViewColumnHeader">
             <Setter Property="Background" Value="{StaticResource MenuBackgroundBrush}"/>
             <Setter Property="Foreground" Value="{StaticResource SecondaryTextBrush}"/>
@@ -240,13 +294,29 @@
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="GridViewColumnHeader">
-                        <Border Background="{TemplateBinding Background}"
-                                BorderBrush="{TemplateBinding BorderBrush}"
-                                BorderThickness="{TemplateBinding BorderThickness}"
-                                Padding="{TemplateBinding Padding}">
-                            <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
-                                              VerticalAlignment="Center"/>
-                        </Border>
+                        <Grid>
+                            <Border x:Name="HeaderChrome"
+                                    Background="{TemplateBinding Background}"
+                                    BorderBrush="{TemplateBinding BorderBrush}"
+                                    BorderThickness="{TemplateBinding BorderThickness}"
+                                    Padding="{TemplateBinding Padding}">
+                                <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                                  VerticalAlignment="Center"/>
+                            </Border>
+                            <Border HorizontalAlignment="Right"
+                                    Width="1"
+                                    Margin="0,8,10,8"
+                                    Background="{StaticResource BorderBrushColor}"
+                                    IsHitTestVisible="False"/>
+                            <Thumb x:Name="PART_HeaderGripper"
+                                   Style="{StaticResource ColumnHeaderGripperThumb}"
+                                   HorizontalAlignment="Right"/>
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="HeaderChrome" Property="Background" Value="{StaticResource MenuHoverBrush}"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
                     </ControlTemplate>
                 </Setter.Value>
             </Setter>

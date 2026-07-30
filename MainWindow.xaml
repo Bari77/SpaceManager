@@ -11,6 +11,7 @@
         Background="{StaticResource WindowBackgroundBrush}">
     <Window.Resources>
         <converters:IndentConverter x:Key="IndentConverter"/>
+        <converters:RatioWidthConverter x:Key="RatioWidthConverter"/>
         <Storyboard x:Key="RowSkeletonPulseStoryboard" RepeatBehavior="Forever">
             <DoubleAnimation Storyboard.TargetProperty="Opacity"
                              From="0.35"
@@ -18,6 +19,18 @@
                              Duration="0:0:0.85"
                              AutoReverse="True"/>
         </Storyboard>
+
+        <Style x:Key="SkeletonBar" TargetType="Border">
+            <Setter Property="Background" Value="#4A4A4F"/>
+            <Setter Property="CornerRadius" Value="3"/>
+            <Setter Property="Opacity" Value="0.45"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+            <Style.Triggers>
+                <EventTrigger RoutedEvent="Loaded">
+                    <BeginStoryboard Storyboard="{StaticResource RowSkeletonPulseStoryboard}"/>
+                </EventTrigger>
+            </Style.Triggers>
+        </Style>
 
         <Style x:Key="SizeStatusText" TargetType="TextBlock">
             <Setter Property="HorizontalAlignment" Value="Right"/>
@@ -29,7 +42,7 @@
                     <Setter Property="Foreground" Value="#888888"/>
                     <Setter Property="FontStyle" Value="Italic"/>
                 </DataTrigger>
-                <DataTrigger Binding="{Binding Node.IsCalculating}" Value="True">
+                <DataTrigger Binding="{Binding Node.ShowsAnalysisProgress}" Value="True">
                     <Setter Property="Foreground" Value="{StaticResource AccentBrush}"/>
                     <Setter Property="FontStyle" Value="Normal"/>
                 </DataTrigger>
@@ -147,77 +160,123 @@
                             </GridViewColumn.Header>
                             <GridViewColumn.CellTemplate>
                                 <DataTemplate DataType="{x:Type models:TreeRow}">
-                                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                                        <Button Width="18"
-                                                Height="18"
+                                    <Grid VerticalAlignment="Center">
+                                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                            <StackPanel.Style>
+                                                <Style TargetType="StackPanel">
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding IsSkeleton}" Value="True">
+                                                            <Setter Property="Visibility" Value="Collapsed"/>
+                                                        </DataTrigger>
+                                                        <DataTrigger Binding="{Binding IsOverflow}" Value="True">
+                                                            <Setter Property="Visibility" Value="Collapsed"/>
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </StackPanel.Style>
+                                            <Button Width="18"
+                                                    Height="18"
+                                                    Margin="{Binding Depth, Converter={StaticResource IndentConverter}}"
+                                                    Padding="0"
+                                                    FontSize="10"
+                                                    Click="ExpandToggle_Click"
+                                                    Tag="{Binding}">
+                                                <Button.Style>
+                                                    <Style TargetType="Button" BasedOn="{StaticResource GhostButton}">
+                                                        <Setter Property="Visibility" Value="Visible"/>
+                                                        <Setter Property="Content" Value="▶"/>
+                                                        <Style.Triggers>
+                                                            <DataTrigger Binding="{Binding CanExpand}" Value="False">
+                                                                <Setter Property="Visibility" Value="Hidden"/>
+                                                            </DataTrigger>
+                                                            <DataTrigger Binding="{Binding Node.IsExpanded}" Value="True">
+                                                                <Setter Property="Content" Value="▼"/>
+                                                            </DataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </Button.Style>
+                                            </Button>
+
+                                            <TextBlock FontFamily="Segoe MDL2 Assets"
+                                                       FontSize="14"
+                                                       VerticalAlignment="Center"
+                                                       Margin="4,0,6,0">
+                                                <TextBlock.Style>
+                                                    <Style TargetType="TextBlock">
+                                                        <Setter Property="Text" Value="&#xE8B7;"/>
+                                                        <Setter Property="Foreground" Value="{StaticResource FolderBrush}"/>
+                                                        <Style.Triggers>
+                                                            <DataTrigger Binding="{Binding Node.IsDirectory}" Value="False">
+                                                                <Setter Property="Text" Value="&#xE7C3;"/>
+                                                                <Setter Property="Foreground" Value="{StaticResource FileBrush}"/>
+                                                            </DataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </TextBlock.Style>
+                                            </TextBlock>
+
+                                            <TextBlock Text="{Binding Node.Name}"
+                                                       VerticalAlignment="Center"
+                                                       Foreground="{StaticResource PrimaryTextBrush}"
+                                                       TextTrimming="CharacterEllipsis"/>
+
+                                            <TextBlock FontFamily="Segoe MDL2 Assets"
+                                                       FontSize="12"
+                                                       Margin="8,0,0,0"
+                                                       VerticalAlignment="Center"
+                                                       Foreground="{StaticResource SecondaryTextBrush}"
+                                                       Text="&#xE712;">
+                                                <TextBlock.Style>
+                                                    <Style TargetType="TextBlock">
+                                                        <Setter Property="Visibility" Value="Collapsed"/>
+                                                        <Style.Triggers>
+                                                            <DataTrigger Binding="{Binding Node.IsQueued}" Value="True">
+                                                                <Setter Property="Visibility" Value="Visible"/>
+                                                                <Setter Property="Foreground" Value="#888888"/>
+                                                            </DataTrigger>
+                                                            <DataTrigger Binding="{Binding Node.ShowsAnalysisProgress}" Value="True">
+                                                                <Setter Property="Visibility" Value="Visible"/>
+                                                                <Setter Property="Foreground" Value="{StaticResource AccentBrush}"/>
+                                                                <Setter Property="Text" Value="&#xE768;"/>
+                                                            </DataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </TextBlock.Style>
+                                            </TextBlock>
+                                        </StackPanel>
+
+                                        <Border Width="160"
+                                                Height="14"
                                                 Margin="{Binding Depth, Converter={StaticResource IndentConverter}}"
-                                                Padding="0"
-                                                FontSize="10"
-                                                Click="ExpandToggle_Click"
-                                                Tag="{Binding}">
-                                            <Button.Style>
-                                                <Style TargetType="Button" BasedOn="{StaticResource GhostButton}">
-                                                    <Setter Property="Visibility" Value="Visible"/>
-                                                    <Setter Property="Content" Value="▶"/>
+                                                Visibility="Collapsed">
+                                            <Border.Style>
+                                                <Style TargetType="Border" BasedOn="{StaticResource SkeletonBar}">
                                                     <Style.Triggers>
-                                                        <DataTrigger Binding="{Binding CanExpand}" Value="False">
-                                                            <Setter Property="Visibility" Value="Hidden"/>
-                                                        </DataTrigger>
-                                                        <DataTrigger Binding="{Binding Node.IsExpanded}" Value="True">
-                                                            <Setter Property="Content" Value="▼"/>
+                                                        <DataTrigger Binding="{Binding IsSkeleton}" Value="True">
+                                                            <Setter Property="Visibility" Value="Visible"/>
                                                         </DataTrigger>
                                                     </Style.Triggers>
                                                 </Style>
-                                            </Button.Style>
-                                        </Button>
+                                            </Border.Style>
+                                        </Border>
 
-                                        <TextBlock FontFamily="Segoe MDL2 Assets"
-                                                   FontSize="14"
+                                        <TextBlock Text="{Binding OverflowText}"
+                                                   Margin="{Binding Depth, Converter={StaticResource IndentConverter}}"
                                                    VerticalAlignment="Center"
-                                                   Margin="4,0,6,0">
-                                            <TextBlock.Style>
-                                                <Style TargetType="TextBlock">
-                                                    <Setter Property="Text" Value="&#xE8B7;"/>
-                                                    <Setter Property="Foreground" Value="{StaticResource FolderBrush}"/>
-                                                    <Style.Triggers>
-                                                        <DataTrigger Binding="{Binding Node.IsDirectory}" Value="False">
-                                                            <Setter Property="Text" Value="&#xE7C3;"/>
-                                                            <Setter Property="Foreground" Value="{StaticResource FileBrush}"/>
-                                                        </DataTrigger>
-                                                    </Style.Triggers>
-                                                </Style>
-                                            </TextBlock.Style>
-                                        </TextBlock>
-
-                                        <TextBlock Text="{Binding Node.Name}"
-                                                   VerticalAlignment="Center"
-                                                   Foreground="{StaticResource PrimaryTextBrush}"
-                                                   TextTrimming="CharacterEllipsis"/>
-
-                                        <TextBlock FontFamily="Segoe MDL2 Assets"
-                                                   FontSize="12"
-                                                   Margin="8,0,0,0"
-                                                   VerticalAlignment="Center"
+                                                   FontStyle="Italic"
                                                    Foreground="{StaticResource SecondaryTextBrush}"
-                                                   Text="&#xE712;">
+                                                   Visibility="Collapsed">
                                             <TextBlock.Style>
                                                 <Style TargetType="TextBlock">
-                                                    <Setter Property="Visibility" Value="Collapsed"/>
                                                     <Style.Triggers>
-                                                        <DataTrigger Binding="{Binding Node.IsQueued}" Value="True">
+                                                        <DataTrigger Binding="{Binding IsOverflow}" Value="True">
                                                             <Setter Property="Visibility" Value="Visible"/>
-                                                            <Setter Property="Foreground" Value="#888888"/>
-                                                        </DataTrigger>
-                                                        <DataTrigger Binding="{Binding Node.IsCalculating}" Value="True">
-                                                            <Setter Property="Visibility" Value="Visible"/>
-                                                            <Setter Property="Foreground" Value="{StaticResource AccentBrush}"/>
-                                                            <Setter Property="Text" Value="&#xE768;"/>
                                                         </DataTrigger>
                                                     </Style.Triggers>
                                                 </Style>
                                             </TextBlock.Style>
                                         </TextBlock>
-                                    </StackPanel>
+                                    </Grid>
                                 </DataTemplate>
                             </GridViewColumn.CellTemplate>
                         </GridViewColumn>
@@ -230,72 +289,104 @@
                             </GridViewColumn.Header>
                             <GridViewColumn.CellTemplate>
                                 <DataTemplate DataType="{x:Type models:TreeRow}">
-                                    <Grid Width="180"
-                                          Height="16"
-                                          VerticalAlignment="Center"
-                                          Margin="0,2">
-                                        <Border Background="{StaticResource BarTrackBrush}"
-                                                CornerRadius="3"/>
-
-                                        <Border CornerRadius="3"
-                                                HorizontalAlignment="Left"
-                                                Width="{Binding Node.BarWidth}">
-                                            <Border.Style>
-                                                <Style TargetType="Border">
-                                                    <Setter Property="Background" Value="{StaticResource AccentBrush}"/>
-                                                    <Setter Property="Visibility" Value="Collapsed"/>
+                                    <Grid VerticalAlignment="Center" Margin="0,2">
+                                        <Grid x:Name="UsageCell"
+                                              Height="16"
+                                              HorizontalAlignment="Stretch">
+                                            <Grid.Style>
+                                                <Style TargetType="Grid">
                                                     <Style.Triggers>
-                                                        <DataTrigger Binding="{Binding Node.IsSizeReady}" Value="True">
-                                                            <Setter Property="Visibility" Value="Visible"/>
-                                                        </DataTrigger>
-                                                        <DataTrigger Binding="{Binding Node.IsDirectory}" Value="False">
-                                                            <Setter Property="Background" Value="{StaticResource FileBrush}"/>
+                                                        <DataTrigger Binding="{Binding IsSkeleton}" Value="True">
+                                                            <Setter Property="Visibility" Value="Collapsed"/>
                                                         </DataTrigger>
                                                     </Style.Triggers>
                                                 </Style>
-                                            </Border.Style>
-                                        </Border>
+                                            </Grid.Style>
+                                            <Border Background="{StaticResource BarTrackBrush}"
+                                                    CornerRadius="3"/>
 
-                                        <Border x:Name="QueuedSkeleton"
-                                                Width="108"
-                                                Height="16"
-                                                HorizontalAlignment="Left"
-                                                Background="#4A4A4F"
-                                                CornerRadius="3"
-                                                Opacity="0.45"
-                                                Visibility="Collapsed">
-                                            <Border.Style>
-                                                <Style TargetType="Border">
-                                                    <Style.Triggers>
-                                                        <DataTrigger Binding="{Binding Node.IsQueued}" Value="True">
-                                                            <Setter Property="Visibility" Value="Visible"/>
-                                                        </DataTrigger>
-                                                    </Style.Triggers>
-                                                </Style>
-                                            </Border.Style>
-                                            <Border.Triggers>
-                                                <EventTrigger RoutedEvent="Loaded">
-                                                    <BeginStoryboard Storyboard="{StaticResource RowSkeletonPulseStoryboard}"/>
-                                                </EventTrigger>
-                                            </Border.Triggers>
-                                        </Border>
+                                            <Border CornerRadius="3"
+                                                    HorizontalAlignment="Left">
+                                                <Border.Width>
+                                                    <MultiBinding Converter="{StaticResource RatioWidthConverter}">
+                                                        <Binding ElementName="UsageCell" Path="ActualWidth"/>
+                                                        <Binding Path="Node.SizeRatio"/>
+                                                    </MultiBinding>
+                                                </Border.Width>
+                                                <Border.Style>
+                                                    <Style TargetType="Border">
+                                                        <Setter Property="Background" Value="{StaticResource AccentBrush}"/>
+                                                        <Setter Property="Visibility" Value="Collapsed"/>
+                                                        <Style.Triggers>
+                                                            <DataTrigger Binding="{Binding Node.IsSizeReady}" Value="True">
+                                                                <Setter Property="Visibility" Value="Visible"/>
+                                                            </DataTrigger>
+                                                            <DataTrigger Binding="{Binding Node.IsDirectory}" Value="False">
+                                                                <Setter Property="Background" Value="{StaticResource FileBrush}"/>
+                                                            </DataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </Border.Style>
+                                            </Border>
 
-                                        <ProgressBar IsIndeterminate="True">
-                                            <ProgressBar.Style>
-                                                <Style TargetType="ProgressBar" BasedOn="{StaticResource SizeProgressBar}">
-                                                    <Setter Property="Visibility" Value="Collapsed"/>
-                                                    <Style.Triggers>
+                                            <Border HorizontalAlignment="Left"
+                                                    Background="#4A4A4F"
+                                                    CornerRadius="3"
+                                                    Opacity="0.45"
+                                                    Height="16"
+                                                    Visibility="Collapsed">
+                                                <Border.Width>
+                                                    <Binding ElementName="UsageCell" Path="ActualWidth"/>
+                                                </Border.Width>
+                                                <Border.Style>
+                                                    <Style TargetType="Border">
+                                                        <Style.Triggers>
+                                                            <DataTrigger Binding="{Binding Node.IsQueued}" Value="True">
+                                                                <Setter Property="Visibility" Value="Visible"/>
+                                                            </DataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </Border.Style>
+                                                <Border.Triggers>
+                                                    <EventTrigger RoutedEvent="Loaded">
+                                                        <BeginStoryboard Storyboard="{StaticResource RowSkeletonPulseStoryboard}"/>
+                                                    </EventTrigger>
+                                                </Border.Triggers>
+                                            </Border>
+
+                                            <ProgressBar IsIndeterminate="True">
+                                                <ProgressBar.Style>
+                                                    <Style TargetType="ProgressBar" BasedOn="{StaticResource SizeProgressBar}">
+                                                        <Setter Property="Visibility" Value="Collapsed"/>
+                                                        <Style.Triggers>
                                                         <MultiDataTrigger>
                                                             <MultiDataTrigger.Conditions>
-                                                                <Condition Binding="{Binding Node.IsCalculating}" Value="True"/>
+                                                                <Condition Binding="{Binding Node.ShowsAnalysisProgress}" Value="True"/>
                                                                 <Condition Binding="{Binding Node.IsQueued}" Value="False"/>
                                                             </MultiDataTrigger.Conditions>
                                                             <Setter Property="Visibility" Value="Visible"/>
                                                         </MultiDataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </ProgressBar.Style>
+                                            </ProgressBar>
+                                        </Grid>
+
+                                        <Border Height="16"
+                                                Visibility="Collapsed">
+                                            <Border.Width>
+                                                <Binding ElementName="UsageCell" Path="ActualWidth"/>
+                                            </Border.Width>
+                                            <Border.Style>
+                                                <Style TargetType="Border" BasedOn="{StaticResource SkeletonBar}">
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding IsSkeleton}" Value="True">
+                                                            <Setter Property="Visibility" Value="Visible"/>
+                                                        </DataTrigger>
                                                     </Style.Triggers>
                                                 </Style>
-                                            </ProgressBar.Style>
-                                        </ProgressBar>
+                                            </Border.Style>
+                                        </Border>
                                     </Grid>
                                 </DataTemplate>
                             </GridViewColumn.CellTemplate>
@@ -312,8 +403,35 @@
                             </GridViewColumn.Header>
                             <GridViewColumn.CellTemplate>
                                 <DataTemplate DataType="{x:Type models:TreeRow}">
-                                    <TextBlock Text="{Binding Node.FormattedSize}"
-                                               Style="{StaticResource SizeStatusText}"/>
+                                    <Grid VerticalAlignment="Center">
+                                        <TextBlock Text="{Binding Node.FormattedSize}"
+                                                   Visibility="Visible">
+                                            <TextBlock.Style>
+                                                <Style TargetType="TextBlock" BasedOn="{StaticResource SizeStatusText}">
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding IsSkeleton}" Value="True">
+                                                            <Setter Property="Visibility" Value="Collapsed"/>
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </TextBlock.Style>
+                                        </TextBlock>
+
+                                        <Border Width="56"
+                                                Height="14"
+                                                HorizontalAlignment="Right"
+                                                Visibility="Collapsed">
+                                            <Border.Style>
+                                                <Style TargetType="Border" BasedOn="{StaticResource SkeletonBar}">
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding IsSkeleton}" Value="True">
+                                                            <Setter Property="Visibility" Value="Visible"/>
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </Border.Style>
+                                        </Border>
+                                    </Grid>
                                 </DataTemplate>
                             </GridViewColumn.CellTemplate>
                         </GridViewColumn>

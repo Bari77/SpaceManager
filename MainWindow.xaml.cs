@@ -16,9 +16,11 @@ namespace SpaceManager;
 public partial class MainWindow : Window, INotifyPropertyChanged
 {
     private readonly CancellationTokenSource _windowCancellation = new();
+    private CancellationTokenSource? _navigationCancellation;
     private readonly HashSet<FolderNode> _trackedNodes = [];
     private readonly FolderSizeService _folderSizeService;
     private readonly DispatcherTimer _refreshDebounceTimer;
+    private readonly DispatcherTimer _loadingRowsTimer;
     private FolderNode? _rootNode;
     private SortColumn _sortColumn = SortColumn.Size;
     private SortDirection _sortDirection = SortDirection.Descending;
@@ -28,9 +30,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     public MainWindow(string initialPath)
     {
-        _folderSizeService = new FolderSizeService(MarshalToUi);
+        _folderSizeService = new FolderSizeService(MarshalToUiAsync);
         _refreshDebounceTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(400) };
         _refreshDebounceTimer.Tick += RefreshDebounceTimerOnTick;
+        _loadingRowsTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(400) };
+        _loadingRowsTimer.Tick += LoadingRowsTimerOnTick;
 
         InitializeComponent();
         SetApplicationIcon();
@@ -82,12 +86,23 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
     }
 
+    private Task MarshalToUiAsync(Action action)
+    {
+        if (Dispatcher.CheckAccess())
+        {
+            action();
+            return Task.CompletedTask;
+        }
+
+        return Dispatcher.InvokeAsync(action, DispatcherPriority.Background).Task;
+    }
+
     private void MarshalToUi(Action action)
     {
         if (Dispatcher.CheckAccess())
             action();
         else
-            Dispatcher.BeginInvoke(action);
+            Dispatcher.BeginInvoke(action, DispatcherPriority.Background);
     }
 
     public void OpenPath(string path)
@@ -99,11 +114,14 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void LoadPath(string path)
     {
+        CancelCurrentNavigation();
         _folderSizeService.CancelAll();
         _refreshDebounceTimer.Stop();
+        _loadingRowsTimer.Stop();
+        _suspendRefresh = false;
+        _refreshPending = false;
 
-        if (_rootNode != null)
-            UntrackNode(_rootNode);
+        DetachAllTrackedNodes();
 
         Rows.Clear();
 
@@ -116,17 +134,79 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         _rootNode.SizeRatio = 1;
         TrackNode(_rootNode);
 
-        _ = ExpandRootAsync(_rootNode);
+        _navigationCancellation = CancellationTokenSource.CreateLinkedTokenSource(_windowCancellation.Token);
+        var rootNode = _rootNode;
+        var navigationToken = _navigationCancellation.Token;
+
+        RebuildRows();
+        _ = ExpandRootAsync(rootNode, navigationToken);
     }
 
-    private async Task ExpandRootAsync(FolderNode rootNode)
+    private void CancelCurrentNavigation(bool dispose = false)
+    {
+        var cts = _navigationCancellation;
+        _navigationCancellation = null;
+        if (cts == null)
+            return;
+
+        try
+        {
+            cts.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+            // Déjà annulé ou libéré par une autre opération.
+        }
+
+        if (dispose)
+            CancellationTokenSourceSafe.Dispose(cts);
+    }
+
+    private void DetachAllTrackedNodes()
+    {
+        foreach (var node in _trackedNodes)
+        {
+            node.PropertyChanged -= NodeOnPropertyChanged;
+            node.SizeChanged -= NodeOnSizeChanged;
+            node.IsExpandedChanged -= NodeOnIsExpandedChanged;
+        }
+
+        _trackedNodes.Clear();
+    }
+
+    private bool IsNodeInCurrentTree(FolderNode node)
+    {
+        for (var current = node; current != null; current = current.Parent)
+        {
+            if (current == _rootNode)
+                return true;
+        }
+
+        return false;
+    }
+
+    private CancellationToken GetNavigationToken() =>
+        _navigationCancellation?.Token ?? _windowCancellation.Token;
+
+    private async Task ExpandRootAsync(FolderNode rootNode, CancellationToken cancellationToken)
     {
         try
         {
             rootNode.IsExpanded = true;
-            await LoadAndPresentAsync(rootNode).ConfigureAwait(true);
-            UpdateRootSizeFromChildren();
-            UpdateRootSizeText();
+            if (cancellationToken.IsCancellationRequested)
+                return;
+
+            RebuildRows();
+            await LoadAndPresentAsync(rootNode, cancellationToken).ConfigureAwait(false);
+
+            if (cancellationToken.IsCancellationRequested || _rootNode != rootNode)
+                return;
+
+            await MarshalToUiAsync(() =>
+            {
+                UpdateRootSizeFromChildren();
+                UpdateRootSizeText();
+            }).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
@@ -142,45 +222,123 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
     }
 
-    private async Task LoadAndPresentAsync(FolderNode node)
+    private async Task LoadAndPresentAsync(FolderNode node, CancellationToken cancellationToken)
     {
         _suspendRefresh = true;
         try
         {
-            await _folderSizeService.LoadChildrenAsync(node, _windowCancellation.Token).ConfigureAwait(true);
+            await _folderSizeService.LoadChildrenAsync(
+                node,
+                cancellationToken,
+                OnChildrenBatchLoaded).ConfigureAwait(false);
 
-            foreach (var child in node.Children.Where(c => !c.IsDummy))
-                TrackNode(child);
+            if (cancellationToken.IsCancellationRequested || !IsNodeInCurrentTree(node))
+                return;
 
-            ApplySort(node);
-            FolderNodeSorter.UpdateSizeRatios(node);
-            UpdateRootSizeFromChildren();
+            await MarshalToUiAsync(() =>
+            {
+                var childCount = 0;
+                foreach (var child in node.Children)
+                {
+                    if (!child.IsDummy)
+                        childCount++;
+                }
+
+                if (childCount <= TreeRowBuilder.MaxVisibleChildren)
+                {
+                    ApplySort(node);
+                    FolderNodeSorter.UpdateSizeRatios(node);
+                }
+
+                UpdateRootSizeFromChildren();
+            }).ConfigureAwait(false);
         }
         finally
         {
-            _suspendRefresh = false;
+            await MarshalToUiAsync(() =>
+            {
+                _suspendRefresh = false;
+                _loadingRowsTimer.Stop();
+            }).ConfigureAwait(false);
         }
 
+        if (!cancellationToken.IsCancellationRequested && IsNodeInCurrentTree(node))
+            await MarshalToUiAsync(RebuildRows).ConfigureAwait(false);
+    }
+
+    private void OnChildrenBatchLoaded(FolderNode parent)
+    {
+        if (_rootNode == null || !IsNodeInCurrentTree(parent))
+            return;
+
+        var newChildren = parent.Children.Where(c => !c.IsDummy).TakeLast(ChildrenBatchSizeHint);
+        foreach (var child in newChildren)
+            TrackNode(child);
+
+        if (parent.IsLoadingChildren)
+        {
+            FolderNodeAnalysis.RefreshPendingAnalysis(parent);
+            ScheduleLoadingRowsRefresh();
+            return;
+        }
+
+        UpdateRootSizeFromChildren();
+        UpdateRootSizeText();
+        ScheduleLoadingRowsRefresh();
+    }
+
+    private const int ChildrenBatchSizeHint = 64;
+
+    private void ScheduleLoadingRowsRefresh()
+    {
+        _loadingRowsTimer.Stop();
+        _loadingRowsTimer.Start();
+    }
+
+    private void LoadingRowsTimerOnTick(object? sender, EventArgs e)
+    {
+        _loadingRowsTimer.Stop();
         RebuildRows();
     }
 
     private void UpdateRootSizeFromChildren()
     {
-        if (_rootNode == null || !_rootNode.ChildrenLoaded)
+        if (_rootNode == null)
             return;
 
-        var children = _rootNode.Children.Where(c => !c.IsDummy).ToList();
-        if (children.Count == 0)
+        if (_rootNode.IsLoadingChildren)
             return;
 
-        var pending = children.Any(c => c.Size < 0 || c.IsCalculating || c.IsQueued);
-        var knownTotal = children.Where(c => c.Size >= 0).Sum(c => c.Size);
+        if (!_rootNode.ChildrenLoaded)
+            return;
 
-        _rootNode.IsCalculating = pending;
-        if (!pending)
+        var pending = false;
+        long knownTotal = 0;
+        var total = 0;
+        var maxSample = TreeRowBuilder.MaxVisibleChildren;
+
+        foreach (var child in _rootNode.Children)
+        {
+            if (child.IsDummy)
+                continue;
+
+            total++;
+            if (total > maxSample)
+                continue;
+
+            if (child.Size < 0 || child.IsCalculating || child.IsQueued)
+                pending = true;
+            else if (child.Size >= 0)
+                knownTotal += child.Size;
+        }
+
+        if (!pending && total <= maxSample && total > 0)
             _rootNode.Size = knownTotal;
         else if (knownTotal > 0)
             _rootNode.Size = knownTotal;
+
+        FolderNodeAnalysis.RefreshPendingAnalysis(_rootNode);
+        FolderNodeSorter.UpdateSizeRatios(_rootNode);
     }
 
     private void ApplySort(FolderNode? node = null)
@@ -264,31 +422,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             TrackNode(child);
     }
 
-    private void UntrackNode(FolderNode node)
-    {
-        if (!_trackedNodes.Remove(node))
-            return;
-
-        node.PropertyChanged -= NodeOnPropertyChanged;
-        node.SizeChanged -= NodeOnSizeChanged;
-        node.IsExpandedChanged -= NodeOnIsExpandedChanged;
-
-        foreach (var child in node.Children.ToList())
-            UntrackNode(child);
-    }
-
-    private void UntrackAllNodes()
-    {
-        foreach (var node in _trackedNodes.ToList())
-            UntrackNode(node);
-
-        _trackedNodes.Clear();
-        _rootNode = null;
-    }
-
     private void NodeOnPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
-        if (sender is FolderNode node && e.PropertyName is nameof(FolderNode.IsCalculating) or nameof(FolderNode.FormattedSize))
+        if (sender is FolderNode node && e.PropertyName is nameof(FolderNode.IsCalculating)
+            or nameof(FolderNode.FormattedSize) or nameof(FolderNode.HasPendingAnalysis)
+            or nameof(FolderNode.LoadState) or nameof(FolderNode.ShowsAnalysisProgress))
         {
             if (node == _rootNode || node.Parent == _rootNode)
                 MarshalToUi(UpdateRootSizeText);
@@ -304,6 +442,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         if (ratioParent != null)
             FolderNodeSorter.UpdateSizeRatios(ratioParent);
 
+        if (node.ChildrenLoaded)
+            FolderNodeSorter.UpdateSizeRatios(node);
+
         if (node.Parent == _rootNode || node == _rootNode)
             UpdateRootSizeFromChildren();
 
@@ -318,9 +459,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private async void ExpandToggle_Click(object sender, RoutedEventArgs e)
     {
-        if (sender is not Button { Tag: TreeRow row })
+        if (sender is not Button { Tag: TreeRow row } || row.IsSkeleton || row.IsOverflow || row.Node == null)
             return;
-
         var node = row.Node;
         if (!node.IsDirectory)
             return;
@@ -337,7 +477,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             node.IsExpanded = true;
 
             if (!node.ChildrenLoaded)
-                await LoadAndPresentAsync(node).ConfigureAwait(true);
+            {
+                RebuildRows();
+                await LoadAndPresentAsync(node, GetNavigationToken()).ConfigureAwait(false);
+            }
             else
                 RebuildRows();
         }
@@ -404,9 +547,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return;
         }
 
-        RootSizeText.Text = _rootNode.IsCalculating || _rootNode.Size < 0
-            ? "Calcul…"
-            : SizeFormatter.Format(_rootNode.Size);
+        RootSizeText.Text = _rootNode.LoadState switch
+        {
+            SizeLoadState.Queued => "En attente",
+            SizeLoadState.Calculating => "Calcul…",
+            _ => SizeFormatter.Format(_rootNode.Size)
+        };
     }
 
     private void NavigatePath_Click(object sender, RoutedEventArgs e) => NavigateToPathTextBox();
@@ -481,10 +627,13 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void ListViewItem_ContextMenuOpening(object sender, ContextMenuEventArgs e)
     {
-        if (sender is not ListViewItem item || item.DataContext is not TreeRow row)
+        if (sender is not ListViewItem item || item.DataContext is not TreeRow row || row.IsSkeleton || row.IsOverflow)
+        {
+            e.Handled = true;
             return;
+        }
 
-        if (item.ContextMenu?.Items.Count > 1 && item.ContextMenu.Items[1] is MenuItem openItem)
+        if (item.ContextMenu?.Items.Count > 1 && item.ContextMenu.Items[1] is MenuItem openItem && row.Node != null)
         {
             openItem.Header = row.Node.IsDirectory
                 ? "Ouvrir le dossier"
@@ -495,7 +644,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private void CopyPathMenuItem_Click(object sender, RoutedEventArgs e)
     {
         var row = GetContextMenuRow(sender);
-        if (row == null || row.Node.IsDummy)
+        if (row == null || row.IsSkeleton || row.Node == null || row.Node.IsDummy)
             return;
 
         Clipboard.SetText(row.Node.FullPath);
@@ -504,7 +653,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private void OpenInExplorerMenuItem_Click(object sender, RoutedEventArgs e)
     {
         var row = GetContextMenuRow(sender);
-        if (row == null || row.Node.IsDummy)
+        if (row == null || row.IsSkeleton || row.Node == null || row.Node.IsDummy)
             return;
 
         try
@@ -527,9 +676,13 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     protected override void OnClosed(EventArgs e)
     {
         _refreshDebounceTimer.Stop();
+        _loadingRowsTimer.Stop();
+        CancelCurrentNavigation(dispose: true);
         _windowCancellation.Cancel();
         _folderSizeService.CancelAll();
-        UntrackAllNodes();
+        DetachAllTrackedNodes();
+        _rootNode = null;
+        _windowCancellation.Dispose();
         base.OnClosed(e);
     }
 
