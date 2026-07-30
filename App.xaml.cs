@@ -84,14 +84,14 @@ public partial class App : Application
 
             try
             {
+                if (PathHelper.TryGetDriveRoot(candidate, out _))
+                    return PathHelper.NormalizeDirectoryPath(candidate);
+
                 if (Directory.Exists(candidate) || Directory.Exists(candidate.TrimEnd('\\') + "\\"))
                     return PathHelper.NormalizeDirectoryPath(candidate);
 
                 if (File.Exists(candidate))
                     return PathHelper.NormalizeDirectoryPath(Path.GetDirectoryName(Path.GetFullPath(candidate)) ?? candidate);
-
-                if (candidate.Length is 2 or 3 && candidate[1] == ':')
-                    return PathHelper.NormalizeDirectoryPath(candidate);
             }
             catch
             {
