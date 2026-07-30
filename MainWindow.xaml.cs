@@ -326,7 +326,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             if (total > maxSample)
                 continue;
 
-            if (child.Size < 0 || child.IsCalculating || child.IsQueued)
+            if (FolderNodeAnalysis.IsSelfPending(child))
                 pending = true;
             else if (child.Size >= 0)
                 knownTotal += child.Size;

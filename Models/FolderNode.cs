@@ -114,17 +114,21 @@ public sealed class FolderNode : INotifyPropertyChanged
     {
         get
         {
+            if (FolderNodeAnalysis.ShowsProgress(this))
+                return SizeLoadState.Calculating;
+
             if (IsQueued)
                 return SizeLoadState.Queued;
-            if (IsCalculating || Size < 0 || IsLoadingChildren)
-                return SizeLoadState.Calculating;
+
             return SizeLoadState.Ready;
         }
     }
 
-    public bool IsSizeReady => LoadState == SizeLoadState.Ready;
+    public bool IsSizeReady => LoadState == SizeLoadState.Ready && Size >= 0;
 
     public bool ShowsAnalysisProgress => LoadState == SizeLoadState.Calculating;
+
+    internal void NotifyChildAnalysisChanged() => NotifySizeStateChanged();
 
     public long Size
     {
@@ -156,6 +160,7 @@ public sealed class FolderNode : INotifyPropertyChanged
     {
         SizeLoadState.Queued => "En attente",
         SizeLoadState.Calculating => "Calcul…",
+        _ when Size < 0 => "—",
         _ => SizeFormatter.Format(Size)
     };
 
