@@ -39,6 +39,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         InitializeComponent();
         SetApplicationIcon();
         ConfigureRowContextMenu();
+        ApplyApplicationVersion();
         DataContext = this;
         UpdateSortHeaders();
         LoadPath(initialPath);
@@ -65,6 +66,13 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         rowStyle.Setters.Add(new EventSetter(FrameworkElement.ContextMenuOpeningEvent, new ContextMenuEventHandler(ListViewItem_ContextMenuOpening)));
 
         FolderList.ItemContainerStyle = rowStyle;
+    }
+
+    private void ApplyApplicationVersion()
+    {
+        var version = UpdateChecker.CurrentVersion.ToString(3);
+        Title = $"SpaceManager v{version}";
+        AppVersionText.Text = $"v{version}";
     }
 
     private void SetApplicationIcon()

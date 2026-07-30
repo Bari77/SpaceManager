@@ -58,13 +58,13 @@ public static class UpdateInstaller
         var scriptPath = Path.Combine(Path.GetTempPath(), $"SpaceManager-update-{Guid.NewGuid():N}.ps1");
         var versionText = newVersion.ToString(3);
 
-        var script = """
+        var script = $$"""
             $ErrorActionPreference = 'SilentlyContinue'
-            Wait-Process -Id {0}
+            Wait-Process -Id {{processId}}
             Start-Sleep -Milliseconds 800
-            $source = '{1}'
-            $target = '{2}'
-            $script = '{3}'
+            $source = '{{EscapePowerShellLiteral(downloadedExePath)}}'
+            $target = '{{EscapePowerShellLiteral(targetExePath)}}'
+            $script = '{{EscapePowerShellLiteral(scriptPath)}}'
             for ($i = 0; $i -lt 40; $i++) {
                 try {
                     Copy-Item -LiteralPath $source -Destination $target -Force
@@ -72,18 +72,10 @@ public static class UpdateInstaller
                 } catch {}
                 Start-Sleep -Milliseconds 500
             }
-            Start-Process -FilePath $target -ArgumentList '--updated','{4}'
+            Start-Process -FilePath $target -ArgumentList '--updated','{{versionText}}'
             Remove-Item -LiteralPath $source -Force
             Remove-Item -LiteralPath $script -Force
             """;
-
-        script = string.Format(
-            script,
-            processId,
-            EscapePowerShellLiteral(downloadedExePath),
-            EscapePowerShellLiteral(targetExePath),
-            EscapePowerShellLiteral(scriptPath),
-            versionText);
 
         File.WriteAllText(scriptPath, script);
 
