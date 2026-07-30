@@ -30,11 +30,34 @@ Pour régénérer l'icône multi-tailles à partir du PNG : `.\scripts\generate-
 
 ## Compilation
 
+### Mode développement (léger, runtime requis)
+
 ```powershell
 dotnet build -c Release
 ```
 
-L'exécutable se trouve dans `bin\Release\net10.0-windows\SpaceManager.exe`.
+Sortie : `bin\Release\net10.0-windows\SpaceManager.exe` (~200 Ko)
+
+**Non autonome** : nécessite le [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download) installé sur la machine. Plusieurs fichiers sont requis (`SpaceManager.exe`, `SpaceManager.dll`, etc.).
+
+### Mode autonome (un seul .exe, runtime inclus)
+
+```powershell
+.\scripts\publish.ps1
+```
+
+Sortie : `bin\publish\win-x64\SpaceManager.exe` (~140 Mo)
+
+**Autonome** : un seul fichier, aucune installation de .NET requise. Idéal pour distribution ou menu contextuel sur d'autres PC.
+
+Commande équivalente :
+
+```powershell
+dotnet publish -c Release -r win-x64 --self-contained true `
+  -p:PublishSingleFile=true `
+  -p:IncludeNativeLibrariesForSelfExtract=true `
+  -o bin\publish\win-x64
+```
 
 ## Menu contextuel
 
