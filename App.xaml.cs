@@ -6,6 +6,8 @@ namespace SpaceManager;
 
 public partial class App : Application
 {
+    private SingleInstanceService? _singleInstance;
+
     protected override void OnStartup(StartupEventArgs e)
     {
         DispatcherUnhandledException += (_, args) =>
@@ -45,26 +47,63 @@ public partial class App : Application
         TryEnsureContextMenuRegistered();
 
         var startupPath = ResolveStartupPath(e.Args);
+        _singleInstance = SingleInstanceService.Acquire();
+
+        if (!_singleInstance.IsFirstInstance)
+        {
+            if (SingleInstanceService.TrySendPathToRunningInstance(startupPath))
+            {
+                Shutdown();
+                return;
+            }
+        }
+
         var mainWindow = new MainWindow(startupPath);
         MainWindow = mainWindow;
+
+        if (_singleInstance.IsFirstInstance)
+            _singleInstance.StartListening(path => ((MainWindow)MainWindow!).OpenPath(path));
+
         mainWindow.Show();
         base.OnStartup(e);
+    }
+
+    protected override void OnExit(ExitEventArgs e)
+    {
+        _singleInstance?.Dispose();
+        base.OnExit(e);
     }
 
     private static string ResolveStartupPath(string[] args)
     {
         if (args.Length > 0)
         {
-            var candidate = args[0].Trim('"');
-            if (Directory.Exists(candidate) || Directory.Exists(candidate.TrimEnd('\\') + "\\"))
-                return PathHelper.NormalizeDirectoryPath(candidate);
+            var candidate = args[0].Trim().Trim('"');
+            if (string.IsNullOrWhiteSpace(candidate))
+                return GetDefaultPath();
 
-            if (File.Exists(candidate))
-                return PathHelper.NormalizeDirectoryPath(Path.GetDirectoryName(Path.GetFullPath(candidate)) ?? candidate);
+            try
+            {
+                if (Directory.Exists(candidate) || Directory.Exists(candidate.TrimEnd('\\') + "\\"))
+                    return PathHelper.NormalizeDirectoryPath(candidate);
+
+                if (File.Exists(candidate))
+                    return PathHelper.NormalizeDirectoryPath(Path.GetDirectoryName(Path.GetFullPath(candidate)) ?? candidate);
+
+                if (candidate.Length is 2 or 3 && candidate[1] == ':')
+                    return PathHelper.NormalizeDirectoryPath(candidate);
+            }
+            catch
+            {
+                // Chemin invalide, on retombe sur le dossier utilisateur.
+            }
         }
 
-        return PathHelper.NormalizeDirectoryPath(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile));
+        return GetDefaultPath();
     }
+
+    private static string GetDefaultPath() =>
+        PathHelper.NormalizeDirectoryPath(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile));
 
     private static void TryEnsureContextMenuRegistered()
     {

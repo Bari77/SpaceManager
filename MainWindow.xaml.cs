@@ -34,6 +34,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         InitializeComponent();
         SetApplicationIcon();
+        ConfigureRowContextMenu();
         DataContext = this;
         UpdateSortHeaders();
         LoadPath(initialPath);
@@ -42,6 +43,25 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     public ObservableCollection<TreeRow> Rows { get; } = [];
 
     public event PropertyChangedEventHandler? PropertyChanged;
+
+    private void ConfigureRowContextMenu()
+    {
+        var baseStyle = (Style)FindResource(typeof(ListViewItem));
+        var rowStyle = new Style(typeof(ListViewItem), baseStyle);
+
+        var contextMenu = new ContextMenu();
+        var copyItem = new MenuItem { Header = "Copier le chemin" };
+        copyItem.Click += CopyPathMenuItem_Click;
+        var openItem = new MenuItem { Header = "Ouvrir le dossier" };
+        openItem.Click += OpenInExplorerMenuItem_Click;
+        contextMenu.Items.Add(copyItem);
+        contextMenu.Items.Add(openItem);
+
+        rowStyle.Setters.Add(new Setter(ContextMenuProperty, contextMenu));
+        rowStyle.Setters.Add(new EventSetter(FrameworkElement.ContextMenuOpeningEvent, new ContextMenuEventHandler(ListViewItem_ContextMenuOpening)));
+
+        FolderList.ItemContainerStyle = rowStyle;
+    }
 
     private void SetApplicationIcon()
     {
@@ -68,6 +88,13 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             action();
         else
             Dispatcher.BeginInvoke(action);
+    }
+
+    public void OpenPath(string path)
+    {
+        Activate();
+        Focus();
+        LoadPath(path);
     }
 
     private void LoadPath(string path)
@@ -429,7 +456,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         if (_rootNode != null && string.Equals(candidate, _rootNode.FullPath, StringComparison.OrdinalIgnoreCase))
             return;
 
-        LoadPath(candidate);
+        OpenPath(candidate);
     }
 
     private void BrowseFolder_Click(object sender, RoutedEventArgs e)
@@ -441,7 +468,60 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         };
 
         if (dialog.ShowDialog() == true)
-            LoadPath(dialog.FolderName);
+            OpenPath(dialog.FolderName);
+    }
+
+    private TreeRow? GetContextMenuRow(object sender)
+    {
+        if (sender is not MenuItem { Parent: ContextMenu { PlacementTarget: ListViewItem item } })
+            return null;
+
+        return item.DataContext as TreeRow;
+    }
+
+    private void ListViewItem_ContextMenuOpening(object sender, ContextMenuEventArgs e)
+    {
+        if (sender is not ListViewItem item || item.DataContext is not TreeRow row)
+            return;
+
+        if (item.ContextMenu?.Items.Count > 1 && item.ContextMenu.Items[1] is MenuItem openItem)
+        {
+            openItem.Header = row.Node.IsDirectory
+                ? "Ouvrir le dossier"
+                : "Ouvrir le dossier contenant";
+        }
+    }
+
+    private void CopyPathMenuItem_Click(object sender, RoutedEventArgs e)
+    {
+        var row = GetContextMenuRow(sender);
+        if (row == null || row.Node.IsDummy)
+            return;
+
+        Clipboard.SetText(row.Node.FullPath);
+    }
+
+    private void OpenInExplorerMenuItem_Click(object sender, RoutedEventArgs e)
+    {
+        var row = GetContextMenuRow(sender);
+        if (row == null || row.Node.IsDummy)
+            return;
+
+        try
+        {
+            if (row.Node.IsDirectory)
+                ExplorerHelper.OpenFolder(row.Node.FullPath);
+            else
+                ExplorerHelper.OpenContainingFolder(row.Node.FullPath);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(
+                $"Impossible d'ouvrir l'Explorateur Windows :\n{ex.Message}",
+                "SpaceManager",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
+        }
     }
 
     protected override void OnClosed(EventArgs e)

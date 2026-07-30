@@ -36,19 +36,10 @@
             </Style.Triggers>
         </Style>
 
-        <Style x:Key="SortHeaderButton" TargetType="Button">
-            <Setter Property="Background" Value="Transparent"/>
-            <Setter Property="BorderThickness" Value="0"/>
-            <Setter Property="Foreground" Value="{StaticResource SecondaryTextBrush}"/>
+        <Style x:Key="SortHeaderButton" TargetType="Button" BasedOn="{StaticResource GhostButton}">
             <Setter Property="FontWeight" Value="SemiBold"/>
             <Setter Property="HorizontalContentAlignment" Value="Left"/>
             <Setter Property="Padding" Value="0"/>
-            <Setter Property="Cursor" Value="Hand"/>
-            <Style.Triggers>
-                <Trigger Property="IsMouseOver" Value="True">
-                    <Setter Property="Foreground" Value="{StaticResource PrimaryTextBrush}"/>
-                </Trigger>
-            </Style.Triggers>
         </Style>
     </Window.Resources>
 
@@ -161,15 +152,11 @@
                                                 Height="18"
                                                 Margin="{Binding Depth, Converter={StaticResource IndentConverter}}"
                                                 Padding="0"
-                                                Background="Transparent"
-                                                BorderThickness="0"
-                                                Foreground="{StaticResource SecondaryTextBrush}"
                                                 FontSize="10"
-                                                Cursor="Hand"
                                                 Click="ExpandToggle_Click"
                                                 Tag="{Binding}">
                                             <Button.Style>
-                                                <Style TargetType="Button">
+                                                <Style TargetType="Button" BasedOn="{StaticResource GhostButton}">
                                                     <Setter Property="Visibility" Value="Visible"/>
                                                     <Setter Property="Content" Value="▶"/>
                                                     <Style.Triggers>
