@@ -17,16 +17,24 @@ public sealed class FolderNode : INotifyPropertyChanged
     private bool _isLoadingChildren;
     private bool _hasPendingAnalysis;
 
-    public FolderNode(string fullPath, string name, bool isDirectory, FolderNode? parent = null)
+    public FolderNode(
+        string fullPath,
+        string name,
+        bool isDirectory,
+        FolderNode? parent = null,
+        bool isReparsePoint = false)
     {
         FullPath = fullPath;
         Name = name;
         IsDirectory = isDirectory;
         Parent = parent;
+        IsReparsePoint = isReparsePoint;
         Children = new ObservableCollection<FolderNode>();
 
-        if (isDirectory)
+        if (isDirectory && !isReparsePoint)
             Children.Add(CreateDummyNode());
+        else if (isReparsePoint)
+            HasDummyChild = false;
     }
 
     public event EventHandler? SizeChanged;
@@ -35,6 +43,13 @@ public sealed class FolderNode : INotifyPropertyChanged
     public string FullPath { get; }
     public string Name { get; }
     public bool IsDirectory { get; }
+
+    /// <summary>
+    /// Lien symbolique, jonction NTFS ou point de montage : le contenu appartient à une autre
+    /// arborescence et ne doit jamais être parcouru ni compté ici.
+    /// </summary>
+    public bool IsReparsePoint { get; }
+
     public FolderNode? Parent { get; }
     public ObservableCollection<FolderNode> Children { get; }
 

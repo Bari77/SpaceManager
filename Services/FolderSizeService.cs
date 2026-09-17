@@ -30,7 +30,7 @@ public sealed class FolderSizeService
         CancellationToken cancellationToken = default,
         Action<FolderNode>? onBatchAdded = null)
     {
-        if (!node.IsDirectory || node.IsDummy || node.ChildrenLoaded || node.IsLoadingChildren)
+        if (!node.IsDirectory || node.IsDummy || node.IsReparsePoint || node.ChildrenLoaded || node.IsLoadingChildren)
             return;
 
         int generation;
@@ -44,7 +44,7 @@ public sealed class FolderSizeService
             onBatchAdded?.Invoke(node);
         }).ConfigureAwait(false);
 
-        var batch = new List<(string Path, string Name, bool IsDirectory)>(ChildrenBatchSize);
+        var batch = new List<ChildEntry>(ChildrenBatchSize);
 
         try
         {
@@ -106,7 +106,7 @@ public sealed class FolderSizeService
 
     public Task CalculateSizeAsync(FolderNode node, CancellationToken cancellationToken = default)
     {
-        if (!node.IsDirectory || node.IsDummy)
+        if (!node.IsDirectory || node.IsDummy || node.IsReparsePoint)
             return Task.CompletedTask;
 
         QueueSizeCalculation(node, cancellationToken);
@@ -140,7 +140,7 @@ public sealed class FolderSizeService
 
     private async Task AddChildrenBatchAsync(
         FolderNode node,
-        IReadOnlyList<(string Path, string Name, bool IsDirectory)> batch,
+        IReadOnlyList<ChildEntry> batch,
         CancellationToken cancellationToken,
         int generation,
         Action<FolderNode>? onBatchAdded)
@@ -158,13 +158,19 @@ public sealed class FolderSizeService
                 if (CancellationTokenSourceSafe.IsCancellationRequested(cancellationToken) || IsLoadStale(generation))
                     return;
 
-                var child = new FolderNode(entry.Path, entry.Name, entry.IsDirectory, node);
+                var child = new FolderNode(entry.Path, entry.Name, entry.IsDirectory, node, entry.IsReparsePoint);
                 node.Children.Add(child);
 
-                if (entry.IsDirectory)
-                    child.IsQueued = true;
-                else
+                if (!entry.IsDirectory)
                     ApplyFileSize(child);
+                else if (entry.IsReparsePoint)
+                {
+                    // La cible est déjà comptée à son emplacement réel : ni parcours, ni taille.
+                    child.ChildrenLoaded = true;
+                    child.Size = 0;
+                }
+                else
+                    child.IsQueued = true;
             }
 
             onBatchAdded?.Invoke(node);
@@ -173,7 +179,9 @@ public sealed class FolderSizeService
 
     private void StartSizeCalculationsForNode(FolderNode node, CancellationToken cancellationToken)
     {
-        foreach (var child in node.Children.Where(c => !c.IsDummy && c.IsDirectory).Take(TreeRowBuilder.MaxVisibleChildren))
+        foreach (var child in node.Children
+                     .Where(c => !c.IsDummy && c.IsDirectory && !c.IsReparsePoint)
+                     .Take(TreeRowBuilder.MaxVisibleChildren))
             QueueSizeCalculation(child, cancellationToken);
     }
 
@@ -374,108 +382,149 @@ public sealed class FolderSizeService
             throw new OperationCanceledException();
     }
 
-    private static async IAsyncEnumerable<(string Path, string Name, bool IsDirectory)> EnumerateImmediateChildrenStreaming(
+    private static async IAsyncEnumerable<ChildEntry> EnumerateImmediateChildrenStreaming(
         string path,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        IEnumerable<string> directories;
-        IEnumerable<string> files;
+        var options = ReparsePointGuard.CreateEnumerationOptions();
+        IEnumerable<DirectoryInfo> directories;
+        IEnumerable<FileInfo> files;
+        DirectoryInfo current;
 
         try
         {
-            directories = Directory.EnumerateDirectories(path);
+            current = new DirectoryInfo(path);
+            directories = current.EnumerateDirectories("*", options);
+            files = current.EnumerateFiles("*", options);
         }
         catch
         {
-            directories = [];
-        }
-
-        try
-        {
-            files = Directory.EnumerateFiles(path);
-        }
-        catch
-        {
-            files = [];
+            yield break;
         }
 
         var yielded = 0;
 
-        foreach (var directory in directories)
+        foreach (var directory in EnumerateSafely(() => directories))
         {
             ThrowIfCancellationRequestedSafe(cancellationToken);
 
-            var name = Path.GetFileName(directory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
-            if (string.IsNullOrEmpty(name))
+            if (string.IsNullOrEmpty(directory.Name))
                 continue;
 
-            yield return (directory, name, true);
+            // Le lien reste visible dans l'arbre, mais il est marqué pour ne pas être parcouru.
+            var isReparsePoint = ReparsePointGuard.ShouldSkipDirectory(directory);
+            if (isReparsePoint)
+                ReparsePointGuard.LogSkipped(directory);
+
+            yield return new ChildEntry(directory.FullName, directory.Name, true, isReparsePoint);
 
             if (++yielded % 256 == 0)
                 await Task.Yield();
         }
 
-        foreach (var file in files)
+        foreach (var file in EnumerateSafely(() => files))
         {
             ThrowIfCancellationRequestedSafe(cancellationToken);
 
-            var name = Path.GetFileName(file);
-            if (string.IsNullOrEmpty(name))
+            if (string.IsNullOrEmpty(file.Name))
                 continue;
 
-            yield return (file, name, false);
+            yield return new ChildEntry(file.FullName, file.Name, false, false);
 
             if (++yielded % 256 == 0)
                 await Task.Yield();
         }
     }
 
+    /// <summary>
+    /// L'énumération est paresseuse : une suppression concurrente lève pendant l'itération.
+    /// On arrête proprement au lieu de perdre le dossier entier.
+    /// </summary>
+    private static IEnumerable<T> EnumerateSafely<T>(Func<IEnumerable<T>> factory)
+    {
+        IEnumerator<T> enumerator;
+        try
+        {
+            enumerator = factory().GetEnumerator();
+        }
+        catch
+        {
+            yield break;
+        }
+
+        using (enumerator)
+        {
+            while (true)
+            {
+                T item;
+                try
+                {
+                    if (!enumerator.MoveNext())
+                        yield break;
+
+                    item = enumerator.Current;
+                }
+                catch
+                {
+                    yield break;
+                }
+
+                yield return item;
+            }
+        }
+    }
+
+    private readonly record struct ChildEntry(string Path, string Name, bool IsDirectory, bool IsReparsePoint);
+
     private static async Task<long> ComputeDirectorySizeAsync(string path, CancellationToken cancellationToken)
     {
+        DirectoryInfo root;
+        try
+        {
+            root = new DirectoryInfo(path);
+        }
+        catch
+        {
+            return 0;
+        }
+
+        if (ReparsePointGuard.ShouldSkipDirectory(root))
+        {
+            ReparsePointGuard.LogSkipped(root);
+            return 0;
+        }
+
+        var options = ReparsePointGuard.CreateEnumerationOptions();
         long total = 0;
-        var pendingDirs = new Stack<string>();
-        pendingDirs.Push(path);
+        var pendingDirs = new Stack<DirectoryInfo>();
+        pendingDirs.Push(root);
 
         while (pendingDirs.Count > 0)
         {
             ThrowIfCancellationRequestedSafe(cancellationToken);
             var current = pendingDirs.Pop();
 
-            IEnumerable<string> subDirs;
-            try
-            {
-                subDirs = Directory.EnumerateDirectories(current);
-            }
-            catch
-            {
-                subDirs = [];
-            }
-
-            foreach (var subDir in subDirs)
-                pendingDirs.Push(subDir);
-
-            IEnumerable<string> files;
-            try
-            {
-                files = Directory.EnumerateFiles(current);
-            }
-            catch
-            {
-                continue;
-            }
-
-            foreach (var file in files)
+            foreach (var subDir in EnumerateSafely(() => current.EnumerateDirectories("*", options)))
             {
                 ThrowIfCancellationRequestedSafe(cancellationToken);
 
-                try
+                // Attributs déjà fournis par l'énumération : pas d'appel disque supplémentaire.
+                if (ReparsePointGuard.ShouldSkipDirectory(subDir))
                 {
-                    total += new FileInfo(file).Length;
+                    ReparsePointGuard.LogSkipped(subDir);
+                    continue;
                 }
-                catch
-                {
-                    // Fichier inaccessible, on continue.
-                }
+
+                pendingDirs.Push(subDir);
+            }
+
+            foreach (var file in EnumerateSafely(() => current.EnumerateFiles("*", options)))
+            {
+                ThrowIfCancellationRequestedSafe(cancellationToken);
+
+                // Length vient des données d'énumération, y compris pour les fichiers
+                // réanalysés (dédup NTFS, OneDrive) dont la taille reste celle du contenu.
+                total += file.Length;
 
                 if (total % (512 * 1024) == 0)
                     await Task.Yield();
